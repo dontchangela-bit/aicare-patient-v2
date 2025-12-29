@@ -1,13 +1,13 @@
 """
-AI-CARE Lung 病人端應用程式 v2.0
+AI-CARE Lung 病人端應用程式 v2.1
 ================================
 肺癌術後智慧照護系統 - 病人端介面
 
-更新內容：
-1. 分離儲存病人輸入 vs AI 回應
-2. 新增開放式問題收集
-3. 整合專家回應範本
-4. 為未來 NLP 訓練準備資料
+更新內容 v2.1：
+1. 整合 Google Sheet 資料庫
+2. 新增病人註冊/登入功能
+3. 雲端資料同步
+4. 多用戶支援
 
 三軍總醫院 數位醫療中心
 """
@@ -30,6 +30,17 @@ from conversation_store import (
 from expert_templates import (
     template_manager, get_expert_response, get_symptom_response
 )
+
+# Google Sheet 資料庫模組
+try:
+    from google_sheet_db import (
+        get_patient_manager, get_report_manager, 
+        get_conversation_manager, get_achievement_manager,
+        init_spreadsheet, test_connection
+    )
+    GOOGLE_SHEET_ENABLED = True
+except ImportError:
+    GOOGLE_SHEET_ENABLED = False
 
 # ============================================
 # 頁面配置
@@ -200,6 +211,26 @@ header {visibility: hidden;}
     color: #166534;
     margin: 1rem 0;
 }
+
+/* 登入卡片 */
+.login-card {
+    background: white;
+    border-radius: 20px;
+    padding: 2rem;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+    max-width: 400px;
+    margin: 2rem auto;
+}
+
+.login-header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.login-header h1 {
+    color: #0891b2;
+    margin: 0.5rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -237,11 +268,251 @@ def init_session_state():
     """初始化 Session State"""
     if "initialized" not in st.session_state:
         st.session_state.initialized = True
-        st.session_state.current_page = "home"
+        st.session_state.current_page = "login"  # 改為登入頁
+        st.session_state.logged_in = False
+        st.session_state.patient = None
+        st.session_state.compliance = None
+        st.session_state.today_reported = False
+        st.session_state.achievements = []
+        st.session_state.report_history = {}
+        st.session_state.chat_messages = []
+        st.session_state.current_symptom_index = 0
+        st.session_state.current_scores = {}
+        st.session_state.current_descriptions = {}
+        st.session_state.open_ended_responses = []
+        st.session_state.conversation_session_id = None
+        st.session_state.use_demo_mode = False
+
+init_session_state()
+
+
+# ============================================
+# 登入/註冊頁面
+# ============================================
+def render_login():
+    """渲染登入頁面"""
+    st.markdown("""
+    <div style="text-align: center; padding: 2rem 0;">
+        <div style="font-size: 4rem;">🫁</div>
+        <h1 style="color: #0891b2; margin: 0.5rem 0;">AI-CARE Lung</h1>
+        <p style="color: #64748b;">肺癌術後智慧照護系統</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 檢查 Google Sheet 連線狀態
+    if GOOGLE_SHEET_ENABLED:
+        try:
+            # 嘗試連線
+            pm = get_patient_manager()
+            connection_ok = pm.spreadsheet is not None
+        except:
+            connection_ok = False
+    else:
+        connection_ok = False
+    
+    # 登入/註冊選項
+    tab1, tab2, tab3 = st.tabs(["🔐 登入", "📝 註冊", "🎮 Demo 模式"])
+    
+    with tab1:
+        render_login_form(connection_ok)
+    
+    with tab2:
+        render_register_form(connection_ok)
+    
+    with tab3:
+        render_demo_mode()
+
+
+def render_login_form(connection_ok: bool):
+    """渲染登入表單"""
+    st.markdown("#### 病人登入")
+    
+    if not connection_ok:
+        st.warning("⚠️ 資料庫連線中...若無法連線，請使用 Demo 模式")
+    
+    with st.form("login_form"):
+        patient_id = st.text_input(
+            "病歷號碼",
+            placeholder="請輸入您的病歷號碼",
+            help="您的病歷號碼由醫院提供"
+        )
+        
+        password = st.text_input(
+            "密碼",
+            type="password",
+            placeholder="請輸入密碼",
+            help="首次登入請先註冊"
+        )
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            submitted = st.form_submit_button("登入", type="primary", use_container_width=True)
+        with col2:
+            forgot = st.form_submit_button("忘記密碼", use_container_width=True)
+    
+    if submitted:
+        if not patient_id or not password:
+            st.error("請填寫病歷號碼和密碼")
+            return
+        
+        if connection_ok:
+            # 使用 Google Sheet 驗證
+            pm = get_patient_manager()
+            success, patient_data = pm.login(patient_id, password)
+            
+            if success:
+                # 登入成功
+                st.session_state.logged_in = True
+                st.session_state.patient = patient_data
+                st.session_state.use_demo_mode = False
+                
+                # 載入順從度資料
+                rm = get_report_manager()
+                st.session_state.compliance = rm.get_compliance_stats(
+                    patient_id, 
+                    patient_data["surgery_date"]
+                )
+                
+                # 檢查今日是否已回報
+                today_report = rm.get_today_report(patient_id)
+                st.session_state.today_reported = today_report is not None
+                
+                # 載入成就
+                am = get_achievement_manager()
+                st.session_state.achievements = am.get_all_achievements_status(patient_id)
+                
+                st.session_state.current_page = "home"
+                st.success("✅ 登入成功！")
+                st.rerun()
+            else:
+                st.error("❌ 病歷號碼或密碼錯誤")
+        else:
+            st.error("❌ 資料庫連線失敗，請使用 Demo 模式")
+    
+    if forgot:
+        st.info("📞 請聯繫個管師協助重設密碼：02-8792-7000")
+
+
+def render_register_form(connection_ok: bool):
+    """渲染註冊表單"""
+    st.markdown("#### 新病人註冊")
+    
+    if not connection_ok:
+        st.warning("⚠️ 資料庫連線中...若無法連線，請使用 Demo 模式")
+        return
+    
+    st.info("💡 請使用您的病歷號碼註冊。若不清楚病歷號碼，請洽詢個管師。")
+    
+    with st.form("register_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            patient_id = st.text_input("病歷號碼 *", placeholder="例如：P12345678")
+            name = st.text_input("姓名 *", placeholder="請輸入真實姓名")
+            gender = st.selectbox("性別 *", ["男", "女"])
+            birthday = st.date_input(
+                "生日 *",
+                value=date(1960, 1, 1),
+                min_value=date(1920, 1, 1),
+                max_value=date.today()
+            )
+        
+        with col2:
+            phone = st.text_input("手機號碼 *", placeholder="09XX-XXX-XXX")
+            surgery_date = st.date_input(
+                "手術日期 *",
+                value=date.today() - timedelta(days=7),
+                max_value=date.today()
+            )
+            surgery_type = st.selectbox(
+                "手術類型 *",
+                ["胸腔鏡右上肺葉切除術", "胸腔鏡左上肺葉切除術",
+                 "胸腔鏡右下肺葉切除術", "胸腔鏡左下肺葉切除術",
+                 "胸腔鏡肺楔狀切除術", "其他"]
+            )
+            cancer_stage = st.selectbox(
+                "癌症分期",
+                ["IA", "IB", "IIA", "IIB", "IIIA", "IIIB", "IV", "不確定"]
+            )
+        
+        st.markdown("---")
+        
+        col3, col4 = st.columns(2)
+        with col3:
+            password = st.text_input("設定密碼 *", type="password", placeholder="至少6位數")
+        with col4:
+            password_confirm = st.text_input("確認密碼 *", type="password", placeholder="再次輸入密碼")
+        
+        agree = st.checkbox("我已閱讀並同意 **個人資料使用同意書**")
+        
+        submitted = st.form_submit_button("註冊", type="primary", use_container_width=True)
+    
+    if submitted:
+        # 驗證表單
+        errors = []
+        if not patient_id:
+            errors.append("請填寫病歷號碼")
+        if not name:
+            errors.append("請填寫姓名")
+        if not phone:
+            errors.append("請填寫手機號碼")
+        if not password or len(password) < 6:
+            errors.append("密碼至少需要6位數")
+        if password != password_confirm:
+            errors.append("兩次密碼不一致")
+        if not agree:
+            errors.append("請同意個人資料使用同意書")
+        
+        if errors:
+            for error in errors:
+                st.error(f"❌ {error}")
+            return
+        
+        # 計算年齡
+        age = (date.today() - birthday).days // 365
+        
+        # 註冊
+        pm = get_patient_manager()
+        success, message = pm.register_patient(
+            patient_id=patient_id,
+            name=name,
+            gender=gender,
+            age=age,
+            birthday=birthday.strftime("%Y-%m-%d"),
+            phone=phone,
+            surgery_date=surgery_date.strftime("%Y-%m-%d"),
+            surgery_type=surgery_type,
+            cancer_stage=cancer_stage,
+            password=password
+        )
+        
+        if success:
+            st.success("✅ 註冊成功！請使用病歷號碼和密碼登入")
+            st.balloons()
+        else:
+            st.error(f"❌ {message}")
+
+
+def render_demo_mode():
+    """渲染 Demo 模式"""
+    st.markdown("#### 🎮 Demo 體驗模式")
+    
+    st.info("""
+    **Demo 模式說明：**
+    - 使用模擬病人資料體驗系統功能
+    - 資料不會儲存到雲端
+    - 關閉頁面後資料會清除
+    - 適合功能展示和測試
+    """)
+    
+    if st.button("🚀 開始 Demo 體驗", type="primary", use_container_width=True):
+        # 設定 Demo 模式
+        st.session_state.logged_in = True
+        st.session_state.use_demo_mode = True
         
         # 模擬病人資料
         st.session_state.patient = {
-            "id": "P001",
+            "id": "DEMO001",
             "name": "王先生",
             "gender": "男",
             "age": 62,
@@ -251,7 +522,7 @@ def init_session_state():
             "cancer_stage": "IA"
         }
         
-        # 順從度資料
+        # 模擬順從度
         st.session_state.compliance = {
             "current_streak": 7,
             "best_streak": 12,
@@ -261,10 +532,9 @@ def init_session_state():
             "level": 3
         }
         
-        # 今日回報狀態
         st.session_state.today_reported = False
         
-        # 成就
+        # 模擬成就
         st.session_state.achievements = [
             {"id": "first_report", "name": "初次回報", "icon": "🌟", "unlocked": True, "date": "2024-12-15"},
             {"id": "streak_3", "name": "連續3天", "icon": "🌱", "unlocked": True, "date": "2024-12-18"},
@@ -274,20 +544,9 @@ def init_session_state():
             {"id": "first_description", "name": "詳細描述者", "icon": "✍️", "unlocked": False, "date": None},
         ]
         
-        # 回報歷史
-        st.session_state.report_history = {}
-        
-        # 對話相關
-        st.session_state.chat_messages = []
-        st.session_state.current_symptom_index = 0
-        st.session_state.current_scores = {}
-        st.session_state.current_descriptions = {}  # 新增：症狀描述
-        st.session_state.open_ended_responses = []  # 新增：開放式回應
-        
-        # 對話會話
-        st.session_state.conversation_session_id = None
+        st.session_state.current_page = "home"
+        st.rerun()
 
-init_session_state()
 
 # ============================================
 # 首頁
@@ -296,6 +555,15 @@ def render_home():
     """渲染首頁"""
     patient = st.session_state.patient
     compliance = st.session_state.compliance
+    
+    # Demo 模式提示
+    if st.session_state.use_demo_mode:
+        st.markdown("""
+        <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; 
+                    padding: 0.5rem 1rem; margin-bottom: 1rem; font-size: 0.85rem;">
+            🎮 <strong>Demo 模式</strong> - 資料不會儲存，僅供體驗
+        </div>
+        """, unsafe_allow_html=True)
     
     # 歡迎卡片
     st.markdown(f"""
@@ -387,7 +655,7 @@ def render_home():
     
     # 成就展示
     st.markdown("### 🎖️ 我的成就")
-    unlocked = [a for a in st.session_state.achievements if a["unlocked"]]
+    unlocked = [a for a in st.session_state.achievements if a.get("unlocked")]
     if unlocked:
         cols = st.columns(len(unlocked))
         for i, achievement in enumerate(unlocked):
@@ -398,6 +666,7 @@ def render_home():
                     <div style="font-size: 0.8rem; color: #64748b;">{achievement['name']}</div>
                 </div>
                 """, unsafe_allow_html=True)
+
 
 # ============================================
 # AI 對話回報（更新版）
@@ -847,7 +1116,7 @@ def save_open_ended_responses():
 
 
 def submit_report():
-    """提交回報（更新版）"""
+    """提交回報（更新版：支援 Google Sheet）"""
     today_str = datetime.now().strftime("%Y-%m-%d")
     patient_id = st.session_state.patient["id"]
     
@@ -861,7 +1130,45 @@ def submit_report():
             completion_type="completed"
         )
     
-    # 更新回報歷史
+    # 儲存到 Google Sheet（如果不是 Demo 模式）
+    if not st.session_state.use_demo_mode and GOOGLE_SHEET_ENABLED:
+        try:
+            rm = get_report_manager()
+            
+            # 收集開放式回答
+            open_ended_list = [r.get('response', '') for r in st.session_state.open_ended_responses]
+            
+            success, report_id = rm.save_report(
+                patient_id=patient_id,
+                scores=st.session_state.current_scores,
+                descriptions=st.session_state.current_descriptions,
+                open_ended=open_ended_list,
+                method="ai_chat"
+            )
+            
+            if success:
+                # 更新順從度
+                st.session_state.compliance = rm.get_compliance_stats(
+                    patient_id,
+                    st.session_state.patient["surgery_date"]
+                )
+                
+                # 檢查成就
+                am = get_achievement_manager()
+                new_achievements = am.check_and_unlock(patient_id, st.session_state.compliance)
+                
+                if new_achievements:
+                    for ach in new_achievements:
+                        st.toast(f"🎉 獲得新成就：{ach['icon']} {ach['name']}！")
+                    st.balloons()
+                
+                # 更新成就列表
+                st.session_state.achievements = am.get_all_achievements_status(patient_id)
+        
+        except Exception as e:
+            st.warning(f"雲端儲存失敗，資料已暫存本地: {e}")
+    
+    # 更新本地狀態
     st.session_state.report_history[today_str] = {
         "completed": True,
         "time": datetime.now().strftime("%H:%M"),
@@ -872,89 +1179,26 @@ def submit_report():
         "session_id": st.session_state.conversation_session_id
     }
     
-    # 更新順從度
     st.session_state.today_reported = True
-    st.session_state.compliance["current_streak"] += 1
-    st.session_state.compliance["total_completed"] += 1
     
-    # 檢查成就
-    streak = st.session_state.compliance["current_streak"]
-    
-    # 連續天數成就
-    if streak >= 14:
-        for a in st.session_state.achievements:
-            if a["id"] == "streak_14" and not a["unlocked"]:
-                a["unlocked"] = True
-                a["date"] = today_str
-                st.balloons()
-    
-    # 詳細描述者成就
-    if len(st.session_state.current_descriptions) > 0 or len(st.session_state.open_ended_responses) > 0:
-        for a in st.session_state.achievements:
-            if a["id"] == "first_description" and not a["unlocked"]:
-                a["unlocked"] = True
-                a["date"] = today_str
-                st.toast("🎉 獲得新成就：詳細描述者！")
-    
-    # 計算積分
-    points = 10  # 基本積分
-    points += len(st.session_state.current_descriptions) * 2  # 描述加分
-    points += len(st.session_state.open_ended_responses) * 5  # 開放式問題加分
-    
-    st.session_state.compliance["points"] += points
+    # Demo 模式下更新順從度
+    if st.session_state.use_demo_mode:
+        st.session_state.compliance["current_streak"] += 1
+        st.session_state.compliance["total_completed"] += 1
+        
+        # 計算積分
+        points = 10
+        points += len(st.session_state.current_descriptions) * 2
+        points += len(st.session_state.open_ended_responses) * 5
+        st.session_state.compliance["points"] += points
     
     # 顯示完成訊息
+    points = 10 + len(st.session_state.current_descriptions) * 2 + len(st.session_state.open_ended_responses) * 5
     st.success(f"✅ 回報已提交！獲得 {points} 積分")
-    
-    # 統計顯示
-    stats = conversation_store.get_patient_stats(patient_id)
-    st.info(f"📊 您今日提供了 {stats.get('total_messages', 0)} 則訊息，總共 {stats.get('total_words', 0)} 個字")
     
     if st.button("返回首頁"):
         st.session_state.current_page = "home"
         st.rerun()
-
-
-# ============================================
-# 資料匯出頁面（開發用）
-# ============================================
-def render_data_export():
-    """資料匯出頁面（開發/研究用）"""
-    st.markdown("### 📤 資料匯出（研究用）")
-    
-    st.warning("⚠️ 此功能僅供研究人員使用")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### 對話資料")
-        if st.button("匯出標註資料", use_container_width=True):
-            data = conversation_store.export_for_annotation()
-            st.json(data[:5])  # 只顯示前5筆
-            st.download_button(
-                "下載完整資料",
-                data=json.dumps(data, ensure_ascii=False, indent=2),
-                file_name=f"annotation_data_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json"
-            )
-    
-    with col2:
-        st.markdown("#### 開放式回應")
-        if st.button("匯出開放式回應", use_container_width=True):
-            data = conversation_store.export_open_ended_for_annotation()
-            st.json(data[:5])
-            st.download_button(
-                "下載完整資料",
-                data=json.dumps(data, ensure_ascii=False, indent=2),
-                file_name=f"open_ended_{datetime.now().strftime('%Y%m%d')}.json",
-                mime="application/json"
-            )
-    
-    st.markdown("---")
-    
-    st.markdown("#### 範本使用統計")
-    stats = template_manager.get_usage_stats()
-    st.json(stats)
 
 
 # ============================================
@@ -1028,9 +1272,40 @@ def render_questionnaire():
     
     with col2:
         if st.button("✅ 提交回報", type="primary", use_container_width=True):
-            # 儲存回報
-            today_str = datetime.now().strftime("%Y-%m-%d")
+            # 儲存到 Google Sheet（如果不是 Demo 模式）
+            if not st.session_state.use_demo_mode and GOOGLE_SHEET_ENABLED:
+                try:
+                    rm = get_report_manager()
+                    success, report_id = rm.save_report(
+                        patient_id=patient["id"],
+                        scores=st.session_state.questionnaire_scores,
+                        descriptions={"additional": additional_notes} if additional_notes else {},
+                        method="questionnaire"
+                    )
+                    
+                    if success:
+                        # 更新順從度
+                        st.session_state.compliance = rm.get_compliance_stats(
+                            patient["id"],
+                            patient["surgery_date"]
+                        )
+                        
+                        # 檢查成就
+                        am = get_achievement_manager()
+                        new_achievements = am.check_and_unlock(patient["id"], st.session_state.compliance)
+                        
+                        if new_achievements:
+                            for ach in new_achievements:
+                                st.toast(f"🎉 獲得新成就：{ach['icon']} {ach['name']}！")
+                            st.balloons()
+                        
+                        st.session_state.achievements = am.get_all_achievements_status(patient["id"])
+                
+                except Exception as e:
+                    st.warning(f"雲端儲存失敗: {e}")
             
+            # 本地狀態更新
+            today_str = datetime.now().strftime("%Y-%m-%d")
             st.session_state.report_history[today_str] = {
                 "completed": True,
                 "time": datetime.now().strftime("%H:%M"),
@@ -1039,21 +1314,17 @@ def render_questionnaire():
                 "method": "questionnaire"
             }
             
-            # 更新順從度
             st.session_state.today_reported = True
-            st.session_state.compliance["current_streak"] += 1
-            st.session_state.compliance["total_completed"] += 1
-            st.session_state.compliance["points"] += 10
+            
+            if st.session_state.use_demo_mode:
+                st.session_state.compliance["current_streak"] += 1
+                st.session_state.compliance["total_completed"] += 1
+                st.session_state.compliance["points"] += 10
             
             st.success("✅ 問卷回報已提交！獲得 10 積分")
             st.balloons()
             
-            # 清除問卷
             st.session_state.questionnaire_scores = {}
-            
-            if st.button("返回首頁", key="back_after_submit"):
-                st.session_state.current_page = "home"
-                st.rerun()
 
 
 # ============================================
@@ -1071,115 +1342,76 @@ def render_history():
     
     st.markdown("---")
     
+    # 從 Google Sheet 載入歷史（如果不是 Demo 模式）
+    reports = []
+    if not st.session_state.use_demo_mode and GOOGLE_SHEET_ENABLED:
+        try:
+            rm = get_report_manager()
+            reports = rm.get_patient_reports(st.session_state.patient["id"], days=30)
+        except:
+            pass
+    
+    # 合併本地記錄
     history = st.session_state.report_history
     
-    if not history:
+    if not reports and not history:
         st.info("📭 目前還沒有回報記錄，完成今日回報後就會顯示在這裡！")
-        
-        # 顯示模擬數據
-        st.markdown("#### 📅 模擬歷史數據預覽")
-        
-        # 生成模擬數據
-        import random
-        demo_data = []
-        for i in range(7):
-            day = datetime.now() - timedelta(days=i+1)
-            demo_data.append({
-                "date": day.strftime("%Y-%m-%d"),
-                "weekday": ["一", "二", "三", "四", "五", "六", "日"][day.weekday()],
-                "scores": {s["id"]: random.randint(0, 5) for s in SYMPTOMS}
-            })
-        
-        # 顯示表格
-        for record in demo_data:
-            with st.expander(f"📅 {record['date']} (週{record['weekday']})"):
+        return
+    
+    st.markdown("#### 📅 您的回報記錄")
+    
+    # 顯示雲端記錄
+    if reports:
+        for record in reports:
+            record_date = datetime.strptime(record["date"], "%Y-%m-%d")
+            weekday = ["一", "二", "三", "四", "五", "六", "日"][record_date.weekday()]
+            
+            scores = record.get('scores', {})
+            avg_score = record.get('avg_score', 0)
+            
+            if avg_score <= 3:
+                status_color = "#10b981"
+                status_text = "良好"
+            elif avg_score <= 6:
+                status_color = "#f59e0b"
+                status_text = "普通"
+            else:
+                status_color = "#ef4444"
+                status_text = "需關注"
+            
+            with st.expander(f"📅 {record['date']} (週{weekday}) - {record.get('time', '')} | 狀態：{status_text}"):
+                method = record.get('method', 'unknown')
+                method_label = "💬 AI對話" if method == "ai_chat" else "📋 問卷" if method == "questionnaire" else "❓"
+                st.markdown(f"**回報方式：** {method_label}")
+                
+                st.markdown("**各症狀評分：**")
                 cols = st.columns(len(SYMPTOMS))
                 for i, symptom in enumerate(SYMPTOMS):
                     with cols[i]:
-                        score = record['scores'][symptom['id']]
-                        color = SCORE_OPTIONS[score]['color']
+                        score = scores.get(symptom['id'], 0)
+                        color = SCORE_OPTIONS[int(score)]['color']
                         st.markdown(f"""
-                        <div style="text-align: center;">
+                        <div style="text-align: center; padding: 0.5rem; background: #f8fafc; border-radius: 8px;">
                             <div style="font-size: 1.5rem;">{symptom['icon']}</div>
-                            <div style="color: {color}; font-weight: bold;">{score}分</div>
-                            <div style="font-size: 0.75rem; color: #64748b;">{symptom['name']}</div>
+                            <div style="color: {color}; font-weight: bold; font-size: 1.25rem;">{int(score)}</div>
+                            <div style="font-size: 0.7rem; color: #64748b;">{symptom['name']}</div>
                         </div>
                         """, unsafe_allow_html=True)
-        
-        st.markdown("<small style='color: #94a3b8;'>* 以上為模擬數據，僅供展示</small>", unsafe_allow_html=True)
-        return
-    
-    # 顯示實際歷史記錄
-    st.markdown("#### 📅 您的回報記錄")
-    
-    # 排序：最新的在前面
-    sorted_dates = sorted(history.keys(), reverse=True)
-    
-    for date_str in sorted_dates:
-        record = history[date_str]
-        
-        # 計算是哪一天
-        record_date = datetime.strptime(date_str, "%Y-%m-%d")
-        weekday = ["一", "二", "三", "四", "五", "六", "日"][record_date.weekday()]
-        
-        # 計算平均分數
-        scores = record.get('scores', {})
-        avg_score = sum(scores.values()) / len(scores) if scores else 0
-        
-        # 根據平均分數設定顏色
-        if avg_score <= 3:
-            status_color = "#10b981"
-            status_text = "良好"
-        elif avg_score <= 6:
-            status_color = "#f59e0b"
-            status_text = "普通"
-        else:
-            status_color = "#ef4444"
-            status_text = "需關注"
-        
-        with st.expander(f"📅 {date_str} (週{weekday}) - {record.get('time', '')} | 狀態：{status_text}"):
-            # 回報方式
-            method = record.get('method', 'unknown')
-            method_label = "💬 AI對話" if method == "ai_chat" else "📋 問卷" if method == "questionnaire" else "❓"
-            st.markdown(f"**回報方式：** {method_label}")
-            
-            st.markdown("**各症狀評分：**")
-            cols = st.columns(len(SYMPTOMS))
-            for i, symptom in enumerate(SYMPTOMS):
-                with cols[i]:
-                    score = scores.get(symptom['id'], 0)
-                    color = SCORE_OPTIONS[score]['color']
-                    st.markdown(f"""
-                    <div style="text-align: center; padding: 0.5rem; background: #f8fafc; border-radius: 8px;">
-                        <div style="font-size: 1.5rem;">{symptom['icon']}</div>
-                        <div style="color: {color}; font-weight: bold; font-size: 1.25rem;">{score}</div>
-                        <div style="font-size: 0.7rem; color: #64748b;">{symptom['name']}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            # 顯示描述
-            descriptions = record.get('descriptions', {})
-            if descriptions:
-                st.markdown("**補充描述：**")
-                for key, desc in descriptions.items():
-                    if desc:
-                        st.markdown(f"- {desc}")
     
     # 統計摘要
     st.markdown("---")
     st.markdown("#### 📈 統計摘要")
     
-    total_reports = len(history)
+    compliance = st.session_state.compliance
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.metric("總回報次數", f"{total_reports} 次")
+        st.metric("總回報次數", f"{compliance['total_completed']} 次")
     with col2:
-        compliance_rate = (st.session_state.compliance['total_completed'] / 
-                          st.session_state.compliance['total_days'] * 100) if st.session_state.compliance['total_days'] > 0 else 0
-        st.metric("完成率", f"{compliance_rate:.0f}%")
+        rate = (compliance['total_completed'] / compliance['total_days'] * 100) if compliance['total_days'] > 0 else 0
+        st.metric("完成率", f"{rate:.0f}%")
     with col3:
-        st.metric("連續天數", f"{st.session_state.compliance['current_streak']} 天")
+        st.metric("連續天數", f"{compliance['current_streak']} 天")
 
 
 # ============================================
@@ -1197,7 +1429,6 @@ def render_achievements():
     
     st.markdown("---")
     
-    # 等級資訊
     compliance = st.session_state.compliance
     
     st.markdown(f"""
@@ -1238,8 +1469,8 @@ def render_achievements():
     achievements = st.session_state.achievements
     
     # 已解鎖的成就
-    unlocked = [a for a in achievements if a["unlocked"]]
-    locked = [a for a in achievements if not a["unlocked"]]
+    unlocked = [a for a in achievements if a.get("unlocked")]
+    locked = [a for a in achievements if not a.get("unlocked")]
     
     if unlocked:
         st.markdown("**✨ 已獲得**")
@@ -1252,7 +1483,7 @@ def render_achievements():
                             border: 2px solid #f59e0b;">
                     <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">{achievement['icon']}</div>
                     <div style="font-weight: 600; color: #92400e;">{achievement['name']}</div>
-                    <div style="font-size: 0.75rem; color: #b45309;">獲得於 {achievement['date']}</div>
+                    <div style="font-size: 0.75rem; color: #b45309;">獲得於 {achievement.get('date', '-')}</div>
                 </div>
                 """, unsafe_allow_html=True)
     
@@ -1322,11 +1553,6 @@ def render_education():
 - 術後第二週：可逐漸增加活動量
 - 術後一個月：可恢復大部分日常活動
 - 完全恢復：約需2-3個月
-
-#### 注意事項
-- 避免用力咳嗽或打噴嚏時壓迫傷口
-- 保持規律的深呼吸練習
-- 遵照醫囑服用藥物
 """
                 },
                 {
@@ -1341,17 +1567,6 @@ def render_education():
 3. 用鼻子緩慢吸氣，讓腹部隆起
 4. 用嘴巴緩慢吐氣，腹部自然下降
 5. 每次練習10-15次，每天3-4次
-
-#### 縮唇呼吸
-1. 用鼻子吸氣
-2. 像吹蠟燭一樣，嘴唇縮成小圓形
-3. 緩慢吐氣，吐氣時間是吸氣的2倍
-4. 適合在活動時使用
-
-#### 肺活量訓練
-- 使用誘發性肺量計（Incentive Spirometer）
-- 每小時練習10次
-- 目標：達到術前的80%以上
 """
                 }
             ]
@@ -1369,53 +1584,11 @@ def render_education():
 #### 常見疼痛類型
 - **傷口痛**：手術切口處的疼痛，通常2-3週會明顯改善
 - **胸壁痛**：肋間神經受影響，可能持續較長時間
-- **肩膀痛**：橫隔膜刺激造成的轉移痛
 
 #### 止痛方法
-1. **藥物治療**
-   - 按時服用止痛藥，不要等到很痛才吃
-   - 常用藥物：Acetaminophen、NSAIDs、弱效鴉片類
-
-2. **非藥物方法**
-   - 冰敷：術後48小時內可減輕腫脹
-   - 熱敷：48小時後可促進血液循環
-   - 放鬆技巧：深呼吸、冥想
-
-#### 何時需要就醫
-- 疼痛評分持續 > 7分
-- 止痛藥無法控制
-- 伴隨發燒、傷口異常
-"""
-                },
-                {
-                    "title": "呼吸困難處理",
-                    "summary": "活動時喘氣的應對方法",
-                    "content": """
-### 呼吸困難處理
-
-#### 為什麼會喘？
-肺部手術後，肺容量會暫時減少，身體需要時間適應。
-
-#### 日常應對
-1. **活動前**
-   - 先做幾次深呼吸
-   - 準備好隨時可以休息
-
-2. **活動中**
-   - 採用縮唇呼吸
-   - 調整活動節奏，「走走停停」
-   - 避免憋氣
-
-3. **活動後**
-   - 坐下休息，前傾姿勢有助呼吸
-   - 等呼吸平穩後再繼續
-
-#### 警示症狀
-若出現以下情況，請立即就醫：
-- 休息時也很喘
-- 嘴唇或指甲發紫
-- 胸悶、胸痛
-- 意識改變
+1. 按時服用止痛藥
+2. 冰敷/熱敷
+3. 放鬆技巧
 """
                 }
             ]
@@ -1431,61 +1604,12 @@ def render_education():
 ### 營養與飲食建議
 
 #### 高蛋白飲食
-- **目標**：每公斤體重 1.2-1.5 克蛋白質
-- **來源**：魚、雞肉、蛋、豆腐、牛奶
-
-#### 維生素補充
-- **維生素C**：促進傷口癒合（柑橘、奇異果）
-- **維生素A**：幫助黏膜修復（紅蘿蔔、南瓜）
-- **鋅**：增強免疫力（牡蠣、堅果）
+- 每公斤體重 1.2-1.5 克蛋白質
+- 來源：魚、雞肉、蛋、豆腐、牛奶
 
 #### 飲食注意
 - 少量多餐，避免過飽影響呼吸
 - 多喝水，幫助痰液稀釋
-- 避免刺激性食物
-- 戒菸戒酒
-
-#### 食慾不佳時
-- 選擇喜歡的食物
-- 調整用餐環境
-- 必要時使用營養補充品
-"""
-                },
-                {
-                    "title": "情緒調適與心理支持",
-                    "summary": "面對術後情緒變化的方法",
-                    "content": """
-### 情緒調適與心理支持
-
-#### 常見情緒反應
-術後出現以下情緒是正常的：
-- 焦慮：擔心恢復、復發
-- 沮喪：活動受限、角色改變
-- 恐懼：對未來的不確定感
-- 憤怒：「為什麼是我？」
-
-#### 調適方法
-1. **接納情緒**
-   - 允許自己有負面情緒
-   - 找人傾訴
-
-2. **維持社交**
-   - 與家人朋友保持聯繫
-   - 加入病友團體
-
-3. **規律作息**
-   - 固定睡眠時間
-   - 適度活動
-
-4. **放鬆技巧**
-   - 深呼吸練習
-   - 正念冥想
-   - 聽音樂、閱讀
-
-#### 何時尋求專業協助
-- 情緒低落超過兩週
-- 失眠嚴重
-- 有自傷想法
 """
                 }
             ]
@@ -1522,14 +1646,48 @@ def render_education():
             <li>發燒超過38.5°C</li>
             <li>咳血或痰中帶血</li>
             <li>傷口紅腫流膿</li>
-            <li>劇烈胸痛</li>
         </ul>
         <div style="margin-top: 0.5rem;">
-            <strong>三軍總醫院急診：</strong> 02-8792-3311<br>
-            <strong>胸腔外科門診：</strong> 02-8792-7000
+            <strong>三軍總醫院急診：</strong> 02-8792-3311
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+
+# ============================================
+# 資料匯出頁面（開發用）
+# ============================================
+def render_data_export():
+    """資料匯出頁面（開發/研究用）"""
+    st.markdown("### 📤 資料匯出（研究用）")
+    
+    st.warning("⚠️ 此功能僅供研究人員使用")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 對話資料")
+        if st.button("匯出標註資料", use_container_width=True):
+            data = conversation_store.export_for_annotation()
+            st.json(data[:5])  # 只顯示前5筆
+            st.download_button(
+                "下載完整資料",
+                data=json.dumps(data, ensure_ascii=False, indent=2),
+                file_name=f"annotation_data_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
+    
+    with col2:
+        st.markdown("#### 開放式回應")
+        if st.button("匯出開放式回應", use_container_width=True):
+            data = conversation_store.export_open_ended_for_annotation()
+            st.json(data[:5])
+            st.download_button(
+                "下載完整資料",
+                data=json.dumps(data, ensure_ascii=False, indent=2),
+                file_name=f"open_ended_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
 
 
 # ============================================
@@ -1540,37 +1698,65 @@ def render_sidebar():
     with st.sidebar:
         st.markdown("## 🫁 AI-CARE Lung")
         st.markdown("肺癌術後智慧照護系統")
-        st.markdown("---")
         
-        # 導航
-        st.markdown("### 📱 功能選單")
-        
-        if st.button("🏠 首頁", use_container_width=True):
-            st.session_state.current_page = "home"
-            st.rerun()
-        
-        if st.button("📊 歷史紀錄", use_container_width=True):
-            st.session_state.current_page = "history"
-            st.rerun()
-        
-        if st.button("🎖️ 成就中心", use_container_width=True):
-            st.session_state.current_page = "achievements"
-            st.rerun()
-        
-        if st.button("📚 衛教資訊", use_container_width=True):
-            st.session_state.current_page = "education"
-            st.rerun()
+        # 如果已登入，顯示用戶資訊
+        if st.session_state.logged_in and st.session_state.patient:
+            patient = st.session_state.patient
+            st.markdown(f"""
+            <div style="background: #f0f9ff; padding: 0.75rem; border-radius: 8px; margin: 0.5rem 0;">
+                <div style="font-weight: 600;">👤 {patient['name']}</div>
+                <div style="font-size: 0.8rem; color: #64748b;">術後第 {patient['post_op_day']} 天</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            if st.session_state.use_demo_mode:
+                st.markdown("<small>🎮 Demo 模式</small>", unsafe_allow_html=True)
         
         st.markdown("---")
         
-        # 開發選項
-        with st.expander("🔧 開發選項"):
-            if st.button("📤 資料匯出", use_container_width=True):
-                st.session_state.current_page = "data_export"
+        # 導航（只有登入後才顯示）
+        if st.session_state.logged_in:
+            st.markdown("### 📱 功能選單")
+            
+            if st.button("🏠 首頁", use_container_width=True):
+                st.session_state.current_page = "home"
                 st.rerun()
             
-            if st.button("🔄 重置今日回報", use_container_width=True):
+            if st.button("📊 歷史紀錄", use_container_width=True):
+                st.session_state.current_page = "history"
+                st.rerun()
+            
+            if st.button("🎖️ 成就中心", use_container_width=True):
+                st.session_state.current_page = "achievements"
+                st.rerun()
+            
+            if st.button("📚 衛教資訊", use_container_width=True):
+                st.session_state.current_page = "education"
+                st.rerun()
+            
+            st.markdown("---")
+            
+            # 開發選項
+            with st.expander("🔧 開發選項"):
+                if st.button("📤 資料匯出", use_container_width=True):
+                    st.session_state.current_page = "data_export"
+                    st.rerun()
+                
+                if st.button("🔄 重置今日回報", use_container_width=True):
+                    st.session_state.today_reported = False
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            # 登出按鈕
+            if st.button("🚪 登出", use_container_width=True):
+                # 重置所有狀態
+                st.session_state.logged_in = False
+                st.session_state.patient = None
+                st.session_state.compliance = None
+                st.session_state.current_page = "login"
                 st.session_state.today_reported = False
+                st.session_state.use_demo_mode = False
                 st.rerun()
         
         st.markdown("---")
@@ -1578,7 +1764,7 @@ def render_sidebar():
         <div style="font-size: 0.8rem; color: #64748b; text-align: center;">
             三軍總醫院<br>
             數位醫療中心<br>
-            v2.0
+            v2.1
         </div>
         """, unsafe_allow_html=True)
 
@@ -1588,10 +1774,18 @@ def render_sidebar():
 # ============================================
 def main():
     """主程式"""
-    render_sidebar()
+    # 未登入時不顯示側邊欄導航
+    if st.session_state.logged_in:
+        render_sidebar()
     
     page = st.session_state.current_page
     
+    # 未登入時只能看登入頁
+    if not st.session_state.logged_in:
+        render_login()
+        return
+    
+    # 已登入後的頁面路由
     if page == "home":
         render_home()
     elif page == "ai_chat":
