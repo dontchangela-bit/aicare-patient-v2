@@ -1,7 +1,13 @@
 """
-AI-CARE Lung 病人端應用程式 v2.1
+AI-CARE Lung 病人端應用程式 v2.2
 ================================
 肺癌術後智慧照護系統 - 病人端介面
+
+更新內容 v2.2：
+1. 新增 AI 語音電話 Demo 功能
+2. 模擬 Bland AI 語音機器人主動撥打電話
+3. 基於 MDASI-LC 的對話式症狀評估
+4. 即時警示等級判定
 
 更新內容 v2.1：
 1. 整合 Google Sheet 資料庫
@@ -30,6 +36,13 @@ from conversation_store import (
 from expert_templates import (
     template_manager, get_expert_response, get_symptom_response
 )
+
+# AI 語音電話 Demo 模組
+try:
+    from voice_call_demo import render_voice_call_demo
+    VOICE_CALL_ENABLED = True
+except ImportError:
+    VOICE_CALL_ENABLED = False
 
 # Google Sheet 資料庫模組
 try:
@@ -620,11 +633,11 @@ def render_home():
         st.markdown("""
         <div class="report-button">
             <h3 style="margin:0; font-size: 1.25rem;">📝 開始今日症狀回報</h3>
-            <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">預計 2-3 分鐘完成</p>
+            <p style="margin: 0.5rem 0 0 0; opacity: 0.9;">選擇您偏好的回報方式</p>
         </div>
         """, unsafe_allow_html=True)
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         with col1:
             if st.button("💬 AI 對話回報", use_container_width=True, type="primary"):
                 # 開始新的對話會話
@@ -645,6 +658,19 @@ def render_home():
             if st.button("📋 數位問卷回報", use_container_width=True):
                 st.session_state.current_page = "questionnaire"
                 st.rerun()
+        
+        with col3:
+            if st.button("📞 AI 語音電話", use_container_width=True):
+                st.session_state.current_page = "voice_call"
+                st.rerun()
+        
+        # AI 語音電話說明
+        st.markdown("""
+        <div style="background: #E0F2F1; border-radius: 12px; padding: 1rem; margin-top: 1rem; font-size: 0.85rem;">
+            <strong>📞 AI 語音電話</strong>：體驗 AI 機器人主動撥打電話追蹤症狀的流程。
+            實際系統會在每日固定時間自動撥打，您只需接聽即可完成回報！
+        </div>
+        """, unsafe_allow_html=True)
     else:
         st.markdown("""
         <div class="report-button report-button-disabled">
@@ -1764,7 +1790,7 @@ def render_sidebar():
         <div style="font-size: 0.8rem; color: #64748b; text-align: center;">
             三軍總醫院<br>
             數位醫療中心<br>
-            v2.1
+            v2.2
         </div>
         """, unsafe_allow_html=True)
 
@@ -1792,6 +1818,15 @@ def main():
         render_ai_chat()
     elif page == "questionnaire":
         render_questionnaire()
+    elif page == "voice_call":
+        # AI 語音電話 Demo
+        if VOICE_CALL_ENABLED:
+            render_voice_call_demo()
+        else:
+            st.error("AI 語音電話模組未載入")
+            if st.button("返回首頁"):
+                st.session_state.current_page = "home"
+                st.rerun()
     elif page == "history":
         render_history()
     elif page == "achievements":
