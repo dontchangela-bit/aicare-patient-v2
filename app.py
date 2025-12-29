@@ -958,6 +958,581 @@ def render_data_export():
 
 
 # ============================================
+# 數位問卷回報頁面
+# ============================================
+def render_questionnaire():
+    """渲染數位問卷回報頁面"""
+    st.markdown("### 📋 數位問卷回報")
+    st.markdown("透過問卷快速完成今日症狀評估")
+    
+    # 返回按鈕
+    if st.button("← 返回首頁"):
+        st.session_state.current_page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    
+    patient = st.session_state.patient
+    
+    st.markdown(f"""
+    <div style="background: #f0f9ff; padding: 1rem; border-radius: 12px; margin-bottom: 1rem;">
+        <strong>👤 {patient['name']}</strong> | 術後第 {patient['post_op_day']} 天
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 初始化問卷分數
+    if "questionnaire_scores" not in st.session_state:
+        st.session_state.questionnaire_scores = {}
+    
+    # 顯示所有症狀問題
+    st.markdown("#### 請評估您今天的症狀（0-10分）")
+    
+    for symptom in SYMPTOMS:
+        st.markdown(f"**{symptom['icon']} {symptom['name']}**")
+        st.markdown(f"<small style='color: #64748b;'>{symptom['question']}</small>", unsafe_allow_html=True)
+        
+        score = st.slider(
+            label=symptom['name'],
+            min_value=0,
+            max_value=10,
+            value=st.session_state.questionnaire_scores.get(symptom['id'], 0),
+            key=f"q_{symptom['id']}",
+            label_visibility="collapsed"
+        )
+        st.session_state.questionnaire_scores[symptom['id']] = score
+        
+        # 顯示分數說明
+        option = SCORE_OPTIONS[score]
+        st.markdown(f"<span style='color: {option['color']}; font-weight: 500;'>{score} 分 - {option['label']}</span>", unsafe_allow_html=True)
+        st.markdown("")
+    
+    st.markdown("---")
+    
+    # 額外描述
+    st.markdown("#### ✍️ 其他想補充的（選填）")
+    additional_notes = st.text_area(
+        "其他描述",
+        placeholder="如果有任何症狀想特別描述，或其他想告訴醫療團隊的事情...",
+        label_visibility="collapsed",
+        height=100
+    )
+    
+    st.markdown("---")
+    
+    # 提交按鈕
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("↩️ 清除重填", use_container_width=True):
+            st.session_state.questionnaire_scores = {}
+            st.rerun()
+    
+    with col2:
+        if st.button("✅ 提交回報", type="primary", use_container_width=True):
+            # 儲存回報
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            
+            st.session_state.report_history[today_str] = {
+                "completed": True,
+                "time": datetime.now().strftime("%H:%M"),
+                "scores": st.session_state.questionnaire_scores.copy(),
+                "descriptions": {"additional": additional_notes} if additional_notes else {},
+                "method": "questionnaire"
+            }
+            
+            # 更新順從度
+            st.session_state.today_reported = True
+            st.session_state.compliance["current_streak"] += 1
+            st.session_state.compliance["total_completed"] += 1
+            st.session_state.compliance["points"] += 10
+            
+            st.success("✅ 問卷回報已提交！獲得 10 積分")
+            st.balloons()
+            
+            # 清除問卷
+            st.session_state.questionnaire_scores = {}
+            
+            if st.button("返回首頁", key="back_after_submit"):
+                st.session_state.current_page = "home"
+                st.rerun()
+
+
+# ============================================
+# 歷史紀錄頁面
+# ============================================
+def render_history():
+    """渲染歷史紀錄頁面"""
+    st.markdown("### 📊 歷史紀錄")
+    st.markdown("查看您過去的症狀回報記錄")
+    
+    # 返回按鈕
+    if st.button("← 返回首頁"):
+        st.session_state.current_page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    
+    history = st.session_state.report_history
+    
+    if not history:
+        st.info("📭 目前還沒有回報記錄，完成今日回報後就會顯示在這裡！")
+        
+        # 顯示模擬數據
+        st.markdown("#### 📅 模擬歷史數據預覽")
+        
+        # 生成模擬數據
+        import random
+        demo_data = []
+        for i in range(7):
+            day = datetime.now() - timedelta(days=i+1)
+            demo_data.append({
+                "date": day.strftime("%Y-%m-%d"),
+                "weekday": ["一", "二", "三", "四", "五", "六", "日"][day.weekday()],
+                "scores": {s["id"]: random.randint(0, 5) for s in SYMPTOMS}
+            })
+        
+        # 顯示表格
+        for record in demo_data:
+            with st.expander(f"📅 {record['date']} (週{record['weekday']})"):
+                cols = st.columns(len(SYMPTOMS))
+                for i, symptom in enumerate(SYMPTOMS):
+                    with cols[i]:
+                        score = record['scores'][symptom['id']]
+                        color = SCORE_OPTIONS[score]['color']
+                        st.markdown(f"""
+                        <div style="text-align: center;">
+                            <div style="font-size: 1.5rem;">{symptom['icon']}</div>
+                            <div style="color: {color}; font-weight: bold;">{score}分</div>
+                            <div style="font-size: 0.75rem; color: #64748b;">{symptom['name']}</div>
+                        </div>
+                        """, unsafe_allow_html=True)
+        
+        st.markdown("<small style='color: #94a3b8;'>* 以上為模擬數據，僅供展示</small>", unsafe_allow_html=True)
+        return
+    
+    # 顯示實際歷史記錄
+    st.markdown("#### 📅 您的回報記錄")
+    
+    # 排序：最新的在前面
+    sorted_dates = sorted(history.keys(), reverse=True)
+    
+    for date_str in sorted_dates:
+        record = history[date_str]
+        
+        # 計算是哪一天
+        record_date = datetime.strptime(date_str, "%Y-%m-%d")
+        weekday = ["一", "二", "三", "四", "五", "六", "日"][record_date.weekday()]
+        
+        # 計算平均分數
+        scores = record.get('scores', {})
+        avg_score = sum(scores.values()) / len(scores) if scores else 0
+        
+        # 根據平均分數設定顏色
+        if avg_score <= 3:
+            status_color = "#10b981"
+            status_text = "良好"
+        elif avg_score <= 6:
+            status_color = "#f59e0b"
+            status_text = "普通"
+        else:
+            status_color = "#ef4444"
+            status_text = "需關注"
+        
+        with st.expander(f"📅 {date_str} (週{weekday}) - {record.get('time', '')} | 狀態：{status_text}"):
+            # 回報方式
+            method = record.get('method', 'unknown')
+            method_label = "💬 AI對話" if method == "ai_chat" else "📋 問卷" if method == "questionnaire" else "❓"
+            st.markdown(f"**回報方式：** {method_label}")
+            
+            st.markdown("**各症狀評分：**")
+            cols = st.columns(len(SYMPTOMS))
+            for i, symptom in enumerate(SYMPTOMS):
+                with cols[i]:
+                    score = scores.get(symptom['id'], 0)
+                    color = SCORE_OPTIONS[score]['color']
+                    st.markdown(f"""
+                    <div style="text-align: center; padding: 0.5rem; background: #f8fafc; border-radius: 8px;">
+                        <div style="font-size: 1.5rem;">{symptom['icon']}</div>
+                        <div style="color: {color}; font-weight: bold; font-size: 1.25rem;">{score}</div>
+                        <div style="font-size: 0.7rem; color: #64748b;">{symptom['name']}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
+            # 顯示描述
+            descriptions = record.get('descriptions', {})
+            if descriptions:
+                st.markdown("**補充描述：**")
+                for key, desc in descriptions.items():
+                    if desc:
+                        st.markdown(f"- {desc}")
+    
+    # 統計摘要
+    st.markdown("---")
+    st.markdown("#### 📈 統計摘要")
+    
+    total_reports = len(history)
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("總回報次數", f"{total_reports} 次")
+    with col2:
+        compliance_rate = (st.session_state.compliance['total_completed'] / 
+                          st.session_state.compliance['total_days'] * 100) if st.session_state.compliance['total_days'] > 0 else 0
+        st.metric("完成率", f"{compliance_rate:.0f}%")
+    with col3:
+        st.metric("連續天數", f"{st.session_state.compliance['current_streak']} 天")
+
+
+# ============================================
+# 成就中心頁面
+# ============================================
+def render_achievements():
+    """渲染成就中心頁面"""
+    st.markdown("### 🎖️ 成就中心")
+    st.markdown("查看您獲得的成就和進度")
+    
+    # 返回按鈕
+    if st.button("← 返回首頁"):
+        st.session_state.current_page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # 等級資訊
+    compliance = st.session_state.compliance
+    
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%); 
+                padding: 1.5rem; border-radius: 16px; color: white; margin-bottom: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <div style="font-size: 0.9rem; opacity: 0.9;">目前等級</div>
+                <div style="font-size: 2rem; font-weight: 700;">Lv.{compliance['level']}</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 0.9rem; opacity: 0.9;">累積積分</div>
+                <div style="font-size: 2rem; font-weight: 700;">⭐ {compliance['points']}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # 等級進度條
+    level_thresholds = [0, 50, 150, 300, 500, 800, 1200]
+    current_level = compliance['level']
+    current_points = compliance['points']
+    
+    if current_level < len(level_thresholds):
+        prev_threshold = level_thresholds[current_level - 1] if current_level > 0 else 0
+        next_threshold = level_thresholds[current_level] if current_level < len(level_thresholds) else level_thresholds[-1]
+        progress = (current_points - prev_threshold) / (next_threshold - prev_threshold) if next_threshold > prev_threshold else 1
+        
+        st.markdown(f"**升級進度：** {current_points} / {next_threshold} 積分")
+        st.progress(min(progress, 1.0))
+        st.markdown(f"<small style='color: #64748b;'>還需 {max(0, next_threshold - current_points)} 積分升到 Lv.{current_level + 1}</small>", unsafe_allow_html=True)
+    
+    st.markdown("---")
+    
+    # 成就列表
+    st.markdown("#### 🏆 成就列表")
+    
+    achievements = st.session_state.achievements
+    
+    # 已解鎖的成就
+    unlocked = [a for a in achievements if a["unlocked"]]
+    locked = [a for a in achievements if not a["unlocked"]]
+    
+    if unlocked:
+        st.markdown("**✨ 已獲得**")
+        cols = st.columns(3)
+        for i, achievement in enumerate(unlocked):
+            with cols[i % 3]:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); 
+                            padding: 1rem; border-radius: 12px; text-align: center; margin-bottom: 1rem;
+                            border: 2px solid #f59e0b;">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">{achievement['icon']}</div>
+                    <div style="font-weight: 600; color: #92400e;">{achievement['name']}</div>
+                    <div style="font-size: 0.75rem; color: #b45309;">獲得於 {achievement['date']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    if locked:
+        st.markdown("**🔒 未解鎖**")
+        cols = st.columns(3)
+        for i, achievement in enumerate(locked):
+            with cols[i % 3]:
+                st.markdown(f"""
+                <div style="background: #f1f5f9; padding: 1rem; border-radius: 12px; 
+                            text-align: center; margin-bottom: 1rem; opacity: 0.7;">
+                    <div style="font-size: 2.5rem; margin-bottom: 0.5rem; filter: grayscale(100%);">{achievement['icon']}</div>
+                    <div style="font-weight: 600; color: #64748b;">{achievement['name']}</div>
+                    <div style="font-size: 0.75rem; color: #94a3b8;">繼續努力！</div>
+                </div>
+                """, unsafe_allow_html=True)
+    
+    # 積分說明
+    st.markdown("---")
+    st.markdown("#### 📝 積分規則")
+    st.markdown("""
+    | 行為 | 積分 |
+    |------|------|
+    | 完成每日回報 | +10 |
+    | 填寫症狀描述 | +2 (每個) |
+    | 回答開放式問題 | +5 (每題) |
+    | 連續7天回報 | +30 |
+    | 連續14天回報 | +50 |
+    | 連續21天回報 | +80 |
+    """)
+
+
+# ============================================
+# 衛教資訊頁面
+# ============================================
+def render_education():
+    """渲染衛教資訊頁面"""
+    st.markdown("### 📚 衛教資訊")
+    st.markdown("肺癌術後照護相關知識")
+    
+    # 返回按鈕
+    if st.button("← 返回首頁"):
+        st.session_state.current_page = "home"
+        st.rerun()
+    
+    st.markdown("---")
+    
+    # 衛教文章分類
+    categories = [
+        {
+            "id": "recovery",
+            "name": "🏥 術後恢復",
+            "articles": [
+                {
+                    "title": "肺葉切除術後注意事項",
+                    "summary": "了解術後傷口護理、活動限制和復原時程",
+                    "content": """
+### 肺葉切除術後注意事項
+
+#### 傷口照護
+- 保持傷口乾燥清潔
+- 手術後約7-10天可拆線
+- 若傷口有紅腫、滲液或發燒，請立即就醫
+
+#### 活動建議
+- 術後第一週：輕度活動，避免提重物
+- 術後第二週：可逐漸增加活動量
+- 術後一個月：可恢復大部分日常活動
+- 完全恢復：約需2-3個月
+
+#### 注意事項
+- 避免用力咳嗽或打噴嚏時壓迫傷口
+- 保持規律的深呼吸練習
+- 遵照醫囑服用藥物
+"""
+                },
+                {
+                    "title": "呼吸復健運動",
+                    "summary": "簡單有效的呼吸訓練方法",
+                    "content": """
+### 呼吸復健運動
+
+#### 腹式呼吸
+1. 平躺或坐著，放鬆肩膀
+2. 一手放在胸部，一手放在腹部
+3. 用鼻子緩慢吸氣，讓腹部隆起
+4. 用嘴巴緩慢吐氣，腹部自然下降
+5. 每次練習10-15次，每天3-4次
+
+#### 縮唇呼吸
+1. 用鼻子吸氣
+2. 像吹蠟燭一樣，嘴唇縮成小圓形
+3. 緩慢吐氣，吐氣時間是吸氣的2倍
+4. 適合在活動時使用
+
+#### 肺活量訓練
+- 使用誘發性肺量計（Incentive Spirometer）
+- 每小時練習10次
+- 目標：達到術前的80%以上
+"""
+                }
+            ]
+        },
+        {
+            "id": "symptoms",
+            "name": "🩺 症狀管理",
+            "articles": [
+                {
+                    "title": "術後疼痛管理",
+                    "summary": "如何有效控制術後疼痛",
+                    "content": """
+### 術後疼痛管理
+
+#### 常見疼痛類型
+- **傷口痛**：手術切口處的疼痛，通常2-3週會明顯改善
+- **胸壁痛**：肋間神經受影響，可能持續較長時間
+- **肩膀痛**：橫隔膜刺激造成的轉移痛
+
+#### 止痛方法
+1. **藥物治療**
+   - 按時服用止痛藥，不要等到很痛才吃
+   - 常用藥物：Acetaminophen、NSAIDs、弱效鴉片類
+
+2. **非藥物方法**
+   - 冰敷：術後48小時內可減輕腫脹
+   - 熱敷：48小時後可促進血液循環
+   - 放鬆技巧：深呼吸、冥想
+
+#### 何時需要就醫
+- 疼痛評分持續 > 7分
+- 止痛藥無法控制
+- 伴隨發燒、傷口異常
+"""
+                },
+                {
+                    "title": "呼吸困難處理",
+                    "summary": "活動時喘氣的應對方法",
+                    "content": """
+### 呼吸困難處理
+
+#### 為什麼會喘？
+肺部手術後，肺容量會暫時減少，身體需要時間適應。
+
+#### 日常應對
+1. **活動前**
+   - 先做幾次深呼吸
+   - 準備好隨時可以休息
+
+2. **活動中**
+   - 採用縮唇呼吸
+   - 調整活動節奏，「走走停停」
+   - 避免憋氣
+
+3. **活動後**
+   - 坐下休息，前傾姿勢有助呼吸
+   - 等呼吸平穩後再繼續
+
+#### 警示症狀
+若出現以下情況，請立即就醫：
+- 休息時也很喘
+- 嘴唇或指甲發紫
+- 胸悶、胸痛
+- 意識改變
+"""
+                }
+            ]
+        },
+        {
+            "id": "lifestyle",
+            "name": "🌿 生活調適",
+            "articles": [
+                {
+                    "title": "營養與飲食建議",
+                    "summary": "促進術後恢復的飲食原則",
+                    "content": """
+### 營養與飲食建議
+
+#### 高蛋白飲食
+- **目標**：每公斤體重 1.2-1.5 克蛋白質
+- **來源**：魚、雞肉、蛋、豆腐、牛奶
+
+#### 維生素補充
+- **維生素C**：促進傷口癒合（柑橘、奇異果）
+- **維生素A**：幫助黏膜修復（紅蘿蔔、南瓜）
+- **鋅**：增強免疫力（牡蠣、堅果）
+
+#### 飲食注意
+- 少量多餐，避免過飽影響呼吸
+- 多喝水，幫助痰液稀釋
+- 避免刺激性食物
+- 戒菸戒酒
+
+#### 食慾不佳時
+- 選擇喜歡的食物
+- 調整用餐環境
+- 必要時使用營養補充品
+"""
+                },
+                {
+                    "title": "情緒調適與心理支持",
+                    "summary": "面對術後情緒變化的方法",
+                    "content": """
+### 情緒調適與心理支持
+
+#### 常見情緒反應
+術後出現以下情緒是正常的：
+- 焦慮：擔心恢復、復發
+- 沮喪：活動受限、角色改變
+- 恐懼：對未來的不確定感
+- 憤怒：「為什麼是我？」
+
+#### 調適方法
+1. **接納情緒**
+   - 允許自己有負面情緒
+   - 找人傾訴
+
+2. **維持社交**
+   - 與家人朋友保持聯繫
+   - 加入病友團體
+
+3. **規律作息**
+   - 固定睡眠時間
+   - 適度活動
+
+4. **放鬆技巧**
+   - 深呼吸練習
+   - 正念冥想
+   - 聽音樂、閱讀
+
+#### 何時尋求專業協助
+- 情緒低落超過兩週
+- 失眠嚴重
+- 有自傷想法
+"""
+                }
+            ]
+        }
+    ]
+    
+    # 選擇分類
+    selected_category = st.selectbox(
+        "選擇分類",
+        options=[c["id"] for c in categories],
+        format_func=lambda x: next(c["name"] for c in categories if c["id"] == x),
+        label_visibility="collapsed"
+    )
+    
+    # 顯示該分類的文章
+    category = next(c for c in categories if c["id"] == selected_category)
+    
+    st.markdown(f"#### {category['name']}")
+    
+    for article in category["articles"]:
+        with st.expander(f"📄 {article['title']}"):
+            st.markdown(f"*{article['summary']}*")
+            st.markdown("---")
+            st.markdown(article["content"])
+    
+    # 緊急聯絡資訊
+    st.markdown("---")
+    st.markdown("#### 🆘 緊急聯絡")
+    st.markdown("""
+    <div style="background: #fef2f2; border: 1px solid #fecaca; padding: 1rem; border-radius: 12px;">
+        <strong style="color: #dc2626;">如有以下情況，請立即就醫：</strong>
+        <ul style="margin: 0.5rem 0; color: #991b1b;">
+            <li>呼吸困難加劇</li>
+            <li>發燒超過38.5°C</li>
+            <li>咳血或痰中帶血</li>
+            <li>傷口紅腫流膿</li>
+            <li>劇烈胸痛</li>
+        </ul>
+        <div style="margin-top: 0.5rem;">
+            <strong>三軍總醫院急診：</strong> 02-8792-3311<br>
+            <strong>胸腔外科門診：</strong> 02-8792-7000
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# ============================================
 # 側邊欄
 # ============================================
 def render_sidebar():
@@ -1021,6 +1596,14 @@ def main():
         render_home()
     elif page == "ai_chat":
         render_ai_chat()
+    elif page == "questionnaire":
+        render_questionnaire()
+    elif page == "history":
+        render_history()
+    elif page == "achievements":
+        render_achievements()
+    elif page == "education":
+        render_education()
     elif page == "data_export":
         render_data_export()
     else:
